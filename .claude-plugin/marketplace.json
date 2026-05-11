@@ -1,0 +1,20 @@
+{
+  "name": "doordarius",
+  "owner": {
+    "name": "Darius Rosendahl",
+    "email": "darius@doordarius.nl",
+    "url": "https://doordarius.nl"
+  },
+  "plugins": [
+    {
+      "name": "doordarius-skills",
+      "source": "./plugins/doordarius-skills",
+      "description": "Personal collection of skills for web development, browser automation, and AI-assisted workflows.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Darius Rosendahl",
+        "email": "darius@doordarius.nl"
+      }
+    }
+  ]
+}
