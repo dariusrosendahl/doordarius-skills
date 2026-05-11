@@ -1,0 +1,19 @@
+{
+  "name": "doordarius-skills",
+  "version": "0.1.0",
+  "description": "Darius's personal collection of Claude Code skills for web development, browser automation, and AI-assisted workflows.",
+  "author": {
+    "name": "Darius Rosendahl",
+    "email": "darius@doordarius.nl",
+    "url": "https://doordarius.nl"
+  },
+  "homepage": "https://github.com/dariusrosendahl/doordarius-skills",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "skills",
+    "browser-automation",
+    "playwright",
+    "web-development"
+  ]
+}
