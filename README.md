@@ -1,8 +1,8 @@
 # doordarius-skills
 
-A personal Claude Code [plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) with skills for web development, browser automation, and AI-assisted workflows.
+Personal collection of agent skills for web development, browser automation, and AI-assisted workflows. Works in Claude Code, Codex, Cursor, GitHub Copilot Chat, and [50+ other agents](https://github.com/vercel-labs/skills#supported-agents).
 
-Skills are short markdown files with frontmatter that teach an AI assistant how to handle a specific task. The skill content is platform-agnostic — Claude Code users can install this as a plugin, but the markdown files also work in Codex CLI, GitHub Copilot, Cursor, and other AI tools.
+Skills are short markdown files with frontmatter that teach an AI assistant how to handle a specific task.
 
 ## Skills
 
@@ -10,50 +10,24 @@ Skills are short markdown files with frontmatter that teach an AI assistant how 
 | --- | --- |
 | [`efficient-browser-automation`](./plugins/doordarius-skills/skills/efficient-browser-automation/SKILL.md) | Use Playwright CLI + accessibility snapshots instead of screenshots/MCP browser tools |
 
-## Install (Claude Code)
+## Install
 
-```bash
-# Add this repo as a plugin marketplace
+```sh
+npx skills add dariusrosendahl/doordarius-skills
+```
+
+Run from inside your agent (Claude Code, Codex CLI, etc.) — the [vercel-labs/skills](https://github.com/vercel-labs/skills) CLI auto-detects which one you're in and symlinks the skills into the right location. Add `-g` for a global install across projects, `--copy` if symlinks aren't supported, or `--skill <name>` to install only a specific one. Same CLI handles `update`, `remove`, and `list`.
+
+### Backup: Claude Code marketplace
+
+If you'd rather not run `npx` (or want the namespaced `doordarius-skills:` prefix in the skill picker):
+
+```sh
 /plugin marketplace add dariusrosendahl/doordarius-skills
-
-# Install the plugin from the marketplace
 /plugin install doordarius-skills@doordarius
 ```
 
-Skills are then auto-discovered and invokable as `/efficient-browser-automation`, etc.
-
-To pick up new skills later:
-
-```bash
-/plugin marketplace update doordarius
-```
-
-## Install (Codex CLI)
-
-Copy any skill's `SKILL.md` into your Codex prompts folder:
-
-```bash
-cp plugins/doordarius-skills/skills/efficient-browser-automation/SKILL.md \
-   ~/.codex/prompts/efficient-browser-automation.md
-```
-
-Invoke with `/efficient-browser-automation` in Codex.
-
-## Install (GitHub Copilot, VS Code)
-
-Copy any skill's `SKILL.md` into your repo's prompts folder:
-
-```bash
-mkdir -p .github/prompts
-cp plugins/doordarius-skills/skills/efficient-browser-automation/SKILL.md \
-   .github/prompts/efficient-browser-automation.prompt.md
-```
-
-Invoke with `/efficient-browser-automation` in Copilot Chat.
-
-## Cross-tool (AGENTS.md)
-
-For tools that auto-load `AGENTS.md` (Codex, Cursor, Aider), append a skill's content to your repo's `AGENTS.md` to make it always-on.
+Pick up new versions with `/plugin marketplace update doordarius`.
 
 ## Repo layout
 
