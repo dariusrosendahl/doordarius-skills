@@ -9,8 +9,9 @@ Skills are short markdown files with frontmatter that teach an AI assistant how 
 | Skill | What it does |
 | --- | --- |
 | [`efficient-browser-automation`](./plugins/doordarius-skills/skills/efficient-browser-automation/SKILL.md) | Use Playwright CLI + accessibility snapshots instead of screenshots/MCP browser tools |
+| [`seo-technical-expert`](./plugins/doordarius-skills/skills/seo-technical-expert/SKILL.md) | Multi-mode SEO/SEA agent — full audits, GSC analysis, Core Web Vitals, BigQuery, content/copy audits, ads review |
 
-## Install
+## 30-second install
 
 ```sh
 npx skills add dariusrosendahl/doordarius-skills
