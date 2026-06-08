@@ -1,5 +1,7 @@
 # doordarius-skills
 
+[![skills.sh](https://skills.sh/b/dariusrosendahl/doordarius-skills)](https://skills.sh/dariusrosendahl/doordarius-skills)
+
 Personal collection of agent skills for web development, browser automation, and AI-assisted workflows. Works in Claude Code, Codex, Cursor, GitHub Copilot Chat, and [50+ other agents](https://github.com/vercel-labs/skills#supported-agents).
 
 Skills are short markdown files with frontmatter that teach an AI assistant how to handle a specific task.
