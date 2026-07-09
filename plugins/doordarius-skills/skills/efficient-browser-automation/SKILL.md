@@ -38,6 +38,32 @@ console.log(JSON.stringify(snapshot, null, 2));
 
 Or use `npx playwright codegen <url>` to interactively explore the page and generate selectors.
 
+## Cookie Banners & Third-Party Noise (MANDATORY on live sites)
+
+Cookie-consent overlays (Cookiebot, OneTrust, ...) intercept every click and waste
+20s-per-click timeouts, appear on some hosts but not others (www yes, *.vercel.app
+preview no), and click-accepting "allow all" on a PRODUCTION site fires real
+GA4/Ads/Clarity events into the client's analytics.
+
+**Default: never let the banner load.** Use the bundled helper (`helpers/consent.mjs`
+in this skill's base directory, announced when the skill loads) BEFORE the first goto:
+
+```js
+// Replace <skill-base-dir> with this skill's base directory from the skill header
+import { suppressThirdParties } from '<skill-base-dir>/helpers/consent.mjs';
+
+const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+await suppressThirdParties(context); // blocks consent + analytics scripts at network level
+const page = await context.newPage();
+```
+
+Only when consented behavior is itself under test (do GTM tags fire?), skip
+suppression and use `acceptCookiebot(page)` from the same helper — it knows all
+Cookiebot button-id variants and waits until the overlay is truly gone.
+
+Symptom to recognize: Playwright logs `subtree intercepts pointer events` with
+`CybotCookiebotDialog` in the blocking element → you forgot this section.
+
 ## Multi-Page Testing Pattern
 
 When verifying multiple pages (e.g., checking 5 URLs for correct rendering), dispatch sub-agents in parallel:
@@ -56,3 +82,5 @@ Each agent reports back its findings. This is faster than sequential testing and
 | Taking screenshots for page inspection                   | Use `page.accessibility.snapshot()` for structured output |
 | Testing pages sequentially                               | Dispatch parallel sub-agents                             |
 | Using MCP tools like `browser_navigate`                  | Use Playwright CLI commands and test scripts             |
+| Clicks time out with "subtree intercepts pointer events" | Cookie banner — use `suppressThirdParties()` (see above)  |
+| Click-accepting cookies on a production site             | Pollutes client analytics — block, don't consent          |
