@@ -1,6 +1,6 @@
 ---
 name: dutch-copy
-description: Use when writing, proofreading, spellchecking or rewriting Dutch (Nederlandse) text: website copy, product descriptions, emails, UI strings. Routes the text through Loes, a Dutch-native LLM hosted in the EU by HostYourAI, then diff-reviews the result so no facts change. Triggers on "spellcheck", "check deze tekst", "schrijf NL copy", "Nederlandse tekst", "herschrijf dit", "taalfouten", "loes".
+description: Dutch (Nederlands) copywriting, spellcheck and proofreading via Loes, the EU-hosted Dutch-native LLM from HostYourAI. Use when writing, checking or rewriting Dutch text: website copy, product descriptions, emails, UI strings. Diff-reviews every correction so no facts change. Triggers on "spellcheck", "taalfouten", "check deze tekst", "schrijf NL copy", "Nederlandse tekst", "herschrijf dit", "loes", "hostyourai".
 ---
 
 # Dutch copy via Loes
@@ -25,14 +25,18 @@ Get a key at <https://hostyourai.com/app/register>, then export it:
 export LOES_PERSONAL_KEY="hyai-..."   # or LOES_API_KEY / HOSTYOURAI_API_KEY
 ```
 
-Needs only `python3` and `curl`. No packages, no SDK, no MCP server.
-Optionally symlink it onto your PATH so every session can just call `loes`:
+`scripts/loes` is a plain shell script. It needs `curl` and `jq`, plus `git` for
+the diff (all three ship with macOS 15+; on Debian/Ubuntu:
+`apt-get install curl jq git`). No packages, no SDK, no MCP server, no
+interpreter runtime.
+
+Symlink it onto your PATH so every session can just call `loes`:
 
 ```sh
-ln -s "$(pwd)/scripts/loes.py" ~/bin/loes   # from this skill's directory
+ln -s "$(pwd)/scripts/loes" ~/bin/loes   # from this skill's directory
 ```
 
-Without the symlink, call it by path: `python3 <skill-dir>/scripts/loes.py ...`
+Without the symlink, call it by path: `<skill-dir>/scripts/loes ...`
 
 ## Usage
 
@@ -67,7 +71,8 @@ meaning anyway. Three failures observed while building this skill:
   The correct fix was `energiezuinig`. A Dutch-native model still invents
   vocabulary, so "it speaks better Dutch than you" is not "it is right".
 
-That is why the tool prints a word-level diff to stderr and demands review.
+That is why `check` prints an inline word-level diff to stderr, in
+`[-removed-]{+added+}` form with surrounding context, and demands review.
 **Read the diff. Approve each change.** A change is safe only if it is
 orthographic (spelling, compounds, punctuation, agreement). Any change to *who
 does what*, a number, price, term, date, product name, or the `u`/`je` register

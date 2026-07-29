@@ -1,0 +1,282 @@
+#!/usr/bin/env bash
+# loes - Dutch copy via HostYourAI's Loes models (OpenAI-compatible router).
+#
+# Modes:
+#   check    proofread NL text: spelling, grammar, punctuation, clumsy phrasing.
+#            Meaning must not change. Prints a word-level diff to stderr.
+#   rewrite  rewrite NL text in a given tone.
+#   gen      generate NL copy from a brief.
+#   ask      raw one-shot prompt, no editorial system prompt.
+#
+# Input comes from a positional argument, --file, or stdin.
+# The result goes to stdout; diff, warnings and token usage go to stderr, so
+# `loes check < in.md > out.md` yields clean text while an agent reading the
+# combined output still sees exactly what changed.
+#
+# Requires: curl, jq, git (all shipped with macOS 15+; on Debian/Ubuntu:
+# `apt-get install curl jq git`). An API key must be in one of
+# LOES_PERSONAL_KEY / LOES_API_KEY / HOSTYOURAI_API_KEY.
+#
+# Exit codes: 0 ok, 1 usage/input error, 2 API error, 3 output tripped a guard.
+
+set -uo pipefail
+
+BASE_URL="${LOES_BASE_URL:-https://hostyourai.com/api/v1}"
+MODEL="${LOES_MODEL:-hyai/loes-large}"
+# Loes models advertise cold_start_seconds up to 120, so allow a long first read.
+TIMEOUT="${LOES_TIMEOUT:-180}"
+
+die() { printf 'loes: %s\n' "$1" >&2; exit "${2:-1}"; }
+warn() { printf 'loes: %s\n' "$1" >&2; }
+
+for dep in curl jq; do
+  command -v "$dep" >/dev/null || die "$dep is required but not on PATH." 2
+done
+
+KEY="${LOES_PERSONAL_KEY:-${LOES_API_KEY:-${HOSTYOURAI_API_KEY:-}}}"
+
+style_rules() {
+  local s="Schrijf Nederlands van moedertaalniveau. Geen Engelse leenwoorden waar een gangbaar Nederlands woord bestaat. Geen gestapelde uitroeptekens en geen marketing-superlatieven zonder onderbouwing."
+  if [ "$ALLOW_DASHES" = 0 ]; then
+    s+=" Gebruik NOOIT gedachtestreepjes (em-dash of en-dash); gebruik in plaats daarvan een komma, een dubbele punt of een nieuwe zin."
+  fi
+  printf '%s' "$s"
+}
+
+system_prompt() {
+  case "$1" in
+    check) cat <<EOF
+Je bent een Nederlandse eindredacteur. Corrigeer spelling, grammatica, interpunctie en kromme formuleringen.
+HARDE REGEL: de betekenis, de feiten en het onderwerp van elke zin blijven exact gelijk. Verander nooit wie iets doet (wij/u/je), nooit een getal, prijs, termijn, datum of productnaam. Voeg niets toe en laat niets weg.
+Behoud de bestaande toon en aanspreekvorm (u of je) zoals in de brontekst.
+Behoud markdown, HTML-tags, URL's en placeholders letterlijk.
+$(style_rules)
+Antwoord met UITSLUITEND de gecorrigeerde tekst, zonder inleiding, zonder uitleg, zonder codeblok.
+EOF
+    ;;
+    rewrite) cat <<EOF
+Je bent een Nederlandse copywriter. Herschrijf de tekst van de gebruiker.
+Behoud alle feiten, getallen, prijzen en productnamen exact.
+Behoud markdown, HTML-tags, URL's en placeholders letterlijk.
+$(style_rules)
+Antwoord met UITSLUITEND de herschreven tekst, zonder inleiding of uitleg.
+EOF
+    ;;
+    gen) cat <<EOF
+Je bent een Nederlandse copywriter. Schrijf nieuwe tekst op basis van de briefing van de gebruiker.
+Verzin geen feiten, prijzen, termijnen of productclaims die niet in de briefing staan. Laat onbekende specifieke gegevens weg in plaats van ze te bedenken.
+$(style_rules)
+Antwoord met UITSLUITEND de tekst zelf.
+EOF
+    ;;
+    ask) : ;;
+  esac
+}
+
+TONE_NAMES="shop zakelijk informeel beknopt seo mail"
+
+# Callers run this inside $( ), where `die` could only exit the subshell, so the
+# tone is validated up front in the argument parser instead.
+tone_line() {
+  case "$1" in
+    shop)      printf 'Toon: webshop, helder en behulpzaam, gericht op een consument die iets wil kopen. Kort, actief, geen jargon.' ;;
+    zakelijk)  printf 'Toon: zakelijk en professioneel, aanspreekvorm u, niet stijf.' ;;
+    informeel) printf 'Toon: informeel en vriendelijk, aanspreekvorm je.' ;;
+    beknopt)   printf 'Toon: zo beknopt mogelijk. Schrap elk woord dat niets toevoegt.' ;;
+    seo)       printf "Toon: informatief en scanbaar voor lezers en zoekmachines. Korte alinea's, natuurlijk gebruik van het hoofdonderwerp, geen keyword stuffing." ;;
+    mail)      printf "Toon: e-mail aan collega's. Zakelijk maar menselijk, direct to the point, geen plichtmatige openingszin." ;;
+  esac
+}
+
+usage() {
+  cat <<'EOF'
+usage: loes <check|rewrite|gen|ask> [text ...] [options]
+       loes --models
+
+options:
+  -f, --file FILE     read input from FILE instead of stdin
+  -m, --model ID      default hyai/loes-large (or $LOES_MODEL)
+  -t, --tone TONE     shop | zakelijk | informeel | beknopt | seo | mail
+      --instruct TXT  extra instruction appended to the system prompt
+      --temp N        default 0.1 for check, 0.5 otherwise
+      --max-tokens N  default 4000
+      --allow-dashes  permit em/en dashes in the output
+      --no-diff       suppress the word diff on stderr
+      --json          dump the raw API response
+      --models        list Loes models with pricing and exit
+
+examples:
+  loes check < copy.md > fixed.md
+  loes rewrite --tone shop "onze lampen zijn heel erg mooi"
+  loes gen --tone seo "intro van 80 woorden voor categoriepagina buitenlampen"
+EOF
+}
+
+# Talk to the router, writing the response body straight to $RESP_FILE. curl gets
+# its own 0600 config file so the key never lands in argv, where `ps` could read
+# it. Nothing here runs inside $( ), so `die` really does end the script.
+#
+# Retries once, but never on 4xx (our fault) nor on the router's 503 +
+# "on_request", which means the model is catalogued but not live. Neither is
+# transient, so retrying only doubles the wait.
+api_json() { # api_json <path> [body_file]; response body lands in $RESP_FILE
+  local path="$1" body_file="${2:-}" attempt cfg status rc last=""
+  cfg="$WORK/curlrc"
+  ( umask 077
+    { printf 'url = "%s%s"\n' "$BASE_URL" "$path"
+      printf 'header = "Authorization: Bearer %s"\n' "$KEY"
+      if [ -n "$body_file" ]; then
+        printf 'header = "Content-Type: application/json"\n'
+        printf 'data = @%s\n' "$body_file"
+      fi
+    } > "$cfg" )
+
+  for attempt in 1 2; do
+    status="$(curl -sS --max-time "$TIMEOUT" -o "$RESP_FILE" -w '%{http_code}' \
+              --config "$cfg" 2> "$WORK/curl.err")"
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+      last="curl exit $rc: $(head -c 200 "$WORK/curl.err")"
+    else
+      case "$status" in
+        2*) return 0 ;;
+        4*) die "HTTP $status: $(head -c 400 "$RESP_FILE")" 2 ;;
+        *)
+          grep -q '"on_request"' "$RESP_FILE" 2>/dev/null &&
+            die "HTTP $status: $(head -c 400 "$RESP_FILE")" 2
+          last="HTTP $status: $(head -c 300 "$RESP_FILE")"
+          ;;
+      esac
+    fi
+    if [ "$attempt" = 1 ]; then
+      warn "$last - retrying once (the model may be cold-starting)"
+      sleep 5
+    fi
+  done
+  die "$last" 2
+}
+
+MODE=""; FILE=""; TONE=""; INSTRUCT=""; TEMP=""; MAXTOK=4000
+ALLOW_DASHES=0; NO_DIFF=0; RAW_JSON=0; LIST_MODELS=0; ARGS=()
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    check|rewrite|gen|ask) [ -z "$MODE" ] && MODE="$1" || ARGS+=("$1"); shift ;;
+    -f|--file)        FILE="${2:?--file needs a path}"; shift 2 ;;
+    -m|--model)       MODEL="${2:?--model needs an id}"; shift 2 ;;
+    -t|--tone)
+      TONE="${2:?--tone needs a value}"
+      case " $TONE_NAMES " in
+        *" $TONE "*) ;;
+        *) die "unknown tone '$TONE'. Pick one of: $TONE_NAMES" ;;
+      esac
+      shift 2 ;;
+    --instruct)       INSTRUCT="${2:?--instruct needs text}"; shift 2 ;;
+    --temp)           TEMP="${2:?--temp needs a number}"; shift 2 ;;
+    --max-tokens)     MAXTOK="${2:?--max-tokens needs a number}"; shift 2 ;;
+    --allow-dashes)   ALLOW_DASHES=1; shift ;;
+    --no-diff)        NO_DIFF=1; shift ;;
+    --json)           RAW_JSON=1; shift ;;
+    --models)         LIST_MODELS=1; shift ;;
+    -h|--help)        usage; exit 0 ;;
+    --)               shift; ARGS+=("$@"); break ;;
+    -*)               die "unknown option '$1'. See --help." ;;
+    *)                ARGS+=("$1"); shift ;;
+  esac
+done
+
+[ -n "$KEY" ] || die "no API key. Get one at https://hostyourai.com/app/register and export it as LOES_PERSONAL_KEY (or LOES_API_KEY)."
+
+WORK="$(mktemp -d)" || die "cannot create temp dir" 2
+trap 'rm -rf "$WORK"' EXIT
+RESP_FILE="$WORK/resp.json"
+
+if [ "$LIST_MODELS" = 1 ]; then
+  api_json /models
+  jq -r '
+    .data[] | select(.id | contains("loes"))
+    | (if .available then "ok " else "OFF" end) + " "
+    + (.id | . + (" " * (44 - length)))
+    + ((.display_name // "") | . + (" " * (34 - length)))
+    + "in=" + (.pricing.input_per_million | tostring)
+    + " out=" + (.pricing.output_per_million | tostring) + " EUR/1M"
+    + " ctx=" + (.served_context_length | tostring)
+    + (if .default then " (default)" else "" end)'
+  exit 0
+fi
+
+[ -n "$MODE" ] || { usage >&2; die "a mode is required (check, rewrite, gen, ask) or use --models"; }
+
+if [ -n "$FILE" ]; then
+  [ -r "$FILE" ] || die "cannot read $FILE"
+  TEXT="$(cat -- "$FILE")"
+elif [ ${#ARGS[@]} -gt 0 ]; then
+  TEXT="${ARGS[*]}"
+elif [ ! -t 0 ]; then
+  TEXT="$(cat)"
+else
+  die "no input. Pass text, use --file, or pipe on stdin."
+fi
+
+[ -n "${TEXT//[[:space:]]/}" ] || die "input is empty"
+
+SYSTEM="$(system_prompt "$MODE")"
+[ -n "$TONE" ] && SYSTEM="$SYSTEM"$'\n'"$(tone_line "$TONE")"
+[ -n "$INSTRUCT" ] && SYSTEM="${SYSTEM:+$SYSTEM$'\n'}$INSTRUCT"
+[ -n "$TEMP" ] || { [ "$MODE" = check ] && TEMP=0.1 || TEMP=0.5; }
+
+jq -n --arg model "$MODEL" --arg sys "$SYSTEM" --arg user "$TEXT" \
+      --argjson temp "$TEMP" --argjson max "$MAXTOK" '
+  {model: $model, temperature: $temp, max_tokens: $max,
+   messages: ((if ($sys | length) == 0 then [] else [{role: "system", content: $sys}] end)
+              + [{role: "user", content: $user}])}' > "$WORK/body.json" \
+  || die "failed to build the request body" 1
+
+api_json /chat/completions "$WORK/body.json"
+
+if [ "$RAW_JSON" = 1 ]; then
+  jq . "$RESP_FILE"
+  exit 0
+fi
+
+OUT="$(jq -r '.choices[0].message.content // empty' "$RESP_FILE")"
+[ -n "$OUT" ] || die "unexpected response: $(head -c 400 "$RESP_FILE")" 2
+
+# Drop a "Hier is de gecorrigeerde tekst:"-style preamble and any code fence.
+OUT="$(printf '%s' "$OUT" \
+  | sed -E '1{/^[[:space:]]*([Hh]ier is|[Hh]ierbij|[Dd]it is)[^:]{0,80}:[[:space:]]*$/d;}' \
+  | sed -E '1{/^```[a-z]*$/d;}' | sed -E '${/^```$/d;}')"
+OUT="${OUT#"${OUT%%[![:space:]]*}"}"
+OUT="${OUT%"${OUT##*[![:space:]]}"}"
+
+printf '%s\n' "$OUT"
+
+GUARD=0
+if [ "$ALLOW_DASHES" = 0 ] && printf '%s' "$OUT" | grep -q $'[—–]'; then
+  warn "WARNING output contains an em/en dash. Replace it before shipping (or pass --allow-dashes if your house style permits them)."
+  GUARD=1
+fi
+
+if [ "$MODE" = check ] && [ "$NO_DIFF" = 0 ]; then
+  printf '%s\n' "$TEXT" > "$WORK/before"
+  printf '%s\n' "$OUT"  > "$WORK/after"
+  if cmp -s "$WORK/before" "$WORK/after"; then
+    warn "no changes; the source was already clean."
+  else
+    warn "changes vs source ([-removed-] {+added+}):"
+    if command -v git >/dev/null; then
+      git --no-pager diff --no-index --no-color --word-diff=plain \
+        --word-diff-regex='[^[:space:]]+' -- "$WORK/before" "$WORK/after" 2>/dev/null \
+        | tail -n +6 | sed 's/^/  /' >&2
+    else
+      diff -u "$WORK/before" "$WORK/after" | tail -n +4 | sed 's/^/  /' >&2
+    fi
+    warn "REVIEW REQUIRED - confirm every change above is purely orthographic. Loes has been observed silently flipping wij/u and inventing words while 'correcting'."
+  fi
+fi
+
+printf 'loes: %s in=%s out=%s tokens\n' "$MODEL" \
+  "$(jq -r '.usage.prompt_tokens // "?"' "$RESP_FILE")" \
+  "$(jq -r '.usage.completion_tokens // "?"' "$RESP_FILE")" >&2
+
+exit "$([ "$GUARD" = 1 ] && echo 3 || echo 0)"
