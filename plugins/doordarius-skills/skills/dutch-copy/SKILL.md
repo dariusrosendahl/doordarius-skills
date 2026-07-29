@@ -1,6 +1,6 @@
 ---
 name: dutch-copy
-description: Dutch (Nederlands) copywriting, spellcheck and proofreading via Loes, the EU-hosted Dutch-native LLM from HostYourAI. Use when writing, checking or rewriting Dutch text: website copy, product descriptions, emails, UI strings. Diff-reviews every correction so no facts change. Triggers on "spellcheck", "taalfouten", "check deze tekst", "schrijf NL copy", "Nederlandse tekst", "herschrijf dit", "loes", "hostyourai".
+description: 'Dutch (Nederlands) copywriting, spellcheck and proofreading via Loes, the EU-hosted Dutch-native LLM from HostYourAI. Use when writing, checking or rewriting Dutch text such as website copy, product descriptions, emails and UI strings. Diff-reviews every correction so no facts change. Triggers on "spellcheck", "taalfouten", "check deze tekst", "schrijf NL copy", "Nederlandse tekst", "herschrijf dit", "loes", "hostyourai".'
 ---
 
 # Dutch copy via Loes
