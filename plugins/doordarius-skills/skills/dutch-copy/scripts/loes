@@ -88,9 +88,65 @@ tone_line() {
   esac
 }
 
+# Reports whether this machine is ready to run, so a caller never has to guess or
+# go looking for configuration. Never prints the key itself, only its public
+# "hyai-" prefix and length. Exit 0 = ready, 1 = not configured.
+doctor() {
+  local rc=0 d var="" live
+  printf 'loes doctor\n\n'
+
+  for d in curl jq git; do
+    if command -v "$d" >/dev/null; then
+      printf '  [ok]   %-9s %s\n' "$d" "$(command -v "$d")"
+    elif [ "$d" = git ]; then
+      printf '  [warn] %-9s not on PATH (only needed for the check diff)\n' "$d"
+    else
+      printf '  [FAIL] %-9s not on PATH; install it\n' "$d"; rc=1
+    fi
+  done
+
+  for d in LOES_PERSONAL_KEY LOES_API_KEY HOSTYOURAI_API_KEY; do
+    if [ -n "${!d:-}" ]; then var="$d"; break; fi
+  done
+
+  if [ -z "$var" ]; then
+    cat <<'MSG'
+  [FAIL] api key   not set
+
+  ASK THE USER for their HostYourAI key, then have them add it to their shell
+  profile (~/.zshrc or ~/.bashrc) and restart the shell:
+
+      export LOES_PERSONAL_KEY="hyai-..."
+
+  Keys come from https://hostyourai.com/app/register
+
+  Do NOT go looking for it: no grepping the home directory or dotfiles, no
+  `security find-generic-password`, no scanning .env files. An exported key is
+  always visible in this environment, so if it is absent here it is not
+  configured, and only the user can supply it.
+MSG
+    return 1
+  fi
+  printf '  [ok]   api key   $%s (%s chars, starts %s)\n' \
+    "$var" "${#KEY}" "$(printf '%.5s' "$KEY")…"
+
+  if ( api_json /models ) >/dev/null 2>"$WORK/doctor.err"; then
+    live="$(jq '[.data[] | select(.id | contains("loes")) | select(.available)] | length' "$RESP_FILE")"
+    printf '  [ok]   router    reachable, %s Loes model(s) live\n' "$live"
+  else
+    printf '  [FAIL] router    unreachable, or the key was rejected\n'
+    sed 's/^/         /' "$WORK/doctor.err" >&2
+    rc=1
+  fi
+
+  printf '\n%s\n' "$([ "$rc" = 0 ] && echo 'ready.' || echo 'not ready; see the FAIL lines above.')"
+  return "$rc"
+}
+
 usage() {
   cat <<'EOF'
 usage: loes <check|rewrite|gen|ask> [text ...] [options]
+       loes doctor          verify deps + key + router before doing anything
        loes --models
 
 options:
@@ -157,10 +213,11 @@ api_json() { # api_json <path> [body_file]; response body lands in $RESP_FILE
 }
 
 MODE=""; FILE=""; TONE=""; INSTRUCT=""; TEMP=""; MAXTOK=4000
-ALLOW_DASHES=0; NO_DIFF=0; RAW_JSON=0; LIST_MODELS=0; ARGS=()
+ALLOW_DASHES=0; NO_DIFF=0; RAW_JSON=0; LIST_MODELS=0; DOCTOR=0; ARGS=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    doctor|--doctor)  DOCTOR=1; shift ;;
     check|rewrite|gen|ask) [ -z "$MODE" ] && MODE="$1" || ARGS+=("$1"); shift ;;
     -f|--file)        FILE="${2:?--file needs a path}"; shift 2 ;;
     -m|--model)       MODEL="${2:?--model needs an id}"; shift 2 ;;
@@ -185,11 +242,20 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-[ -n "$KEY" ] || die "no API key. Get one at https://hostyourai.com/app/register and export it as LOES_PERSONAL_KEY (or LOES_API_KEY)."
-
 WORK="$(mktemp -d)" || die "cannot create temp dir" 2
 trap 'rm -rf "$WORK"' EXIT
 RESP_FILE="$WORK/resp.json"
+
+if [ "$DOCTOR" = 1 ]; then doctor; exit $?; fi
+
+if [ -z "$KEY" ]; then
+  die "no API key in \$LOES_PERSONAL_KEY, \$LOES_API_KEY or \$HOSTYOURAI_API_KEY.
+       ASK THE USER for their HostYourAI key (https://hostyourai.com/app/register)
+       and have them export LOES_PERSONAL_KEY in their shell profile.
+       Do NOT search for it: no grepping \$HOME or dotfiles, no keychain lookups.
+       An exported key is always visible here, so absent means not configured.
+       Run 'loes doctor' for a full readiness report."
+fi
 
 if [ "$LIST_MODELS" = 1 ]; then
   api_json /models

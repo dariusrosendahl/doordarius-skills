@@ -5,6 +5,29 @@ description: 'Dutch (Nederlands) copywriting, spellcheck and proofreading via Lo
 
 # Dutch copy via Loes
 
+## Preflight: run this first, once per session
+
+```sh
+loes doctor
+```
+
+It reports deps, whether the API key is present, and whether the router answers.
+Exit 0 means go ahead. Exit 1 prints exactly what is missing.
+
+**If it says the key is not set, stop and ask the user for it.** Do not go
+looking for it. Specifically: no grepping `$HOME` or dotfiles for `hyai-`, no
+`security find-generic-password`, no scanning `.env` files. An exported key is
+always visible in the agent's environment, so if it is absent there it is not
+configured, and only the user can supply it. Hunting for it burns minutes and
+thousands of tokens, and rakes unrelated secrets into the transcript. One
+question to the user settles it:
+
+> "Loes needs a HostYourAI API key. Grab one at https://hostyourai.com/app/register
+> and add `export LOES_PERSONAL_KEY="hyai-..."` to your shell profile."
+
+If `loes` is not on PATH, call the bundled script directly:
+`<skill-dir>/scripts/loes doctor`
+
 ## Why a separate model
 
 General-purpose coding models write *serviceable* Dutch. They reliably miss
@@ -19,11 +42,14 @@ the whole point of this skill, and the `check` diff enforces it.
 
 ## Setup (once)
 
-Get a key at <https://hostyourai.com/app/register>, then export it:
+Get a key at <https://hostyourai.com/app/register>, then export it in your shell
+profile (`~/.zshrc` / `~/.bashrc`) and restart the shell:
 
 ```sh
 export LOES_PERSONAL_KEY="hyai-..."   # or LOES_API_KEY / HOSTYOURAI_API_KEY
 ```
+
+Confirm with `loes doctor`.
 
 `scripts/loes` is a plain shell script. It needs `curl` and `jq`, plus `git` for
 the diff (all three ship with macOS 15+; on Debian/Ubuntu:
