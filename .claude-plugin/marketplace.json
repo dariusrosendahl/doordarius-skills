@@ -10,7 +10,7 @@
       "name": "doordarius-skills",
       "source": "./plugins/doordarius-skills",
       "description": "Personal collection of skills for web development, browser automation, SEO, Dutch copywriting, and AI-assisted workflows.",
-      "version": "0.2.1",
+      "version": "0.3.0",
       "author": {
         "name": "Darius Rosendahl",
         "email": "darius@doordarius.nl"

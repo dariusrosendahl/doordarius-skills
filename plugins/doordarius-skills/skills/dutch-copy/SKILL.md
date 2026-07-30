@@ -81,11 +81,12 @@ writes clean text while you still see what changed.
 
 Tones: `shop`, `zakelijk`, `informeel`, `beknopt`, `seo`, `mail`.
 Useful flags: `--instruct "<extra rule>"`, `--model`, `--temp`, `--allow-dashes`,
-`--no-diff`, `--json`.
+`--no-guard`, `--verify`, `--no-diff`, `--json`.
 
-Exit codes: `0` ok, `1` usage/input error, `2` API error, `3` a style guard tripped.
+Exit codes: `0` ok, `1` usage/input error, `2` API error, `3` a guard tripped
+(semantic drift or an em-dash). **Exit 3 means do not ship this output.**
 
-## The rule that matters: never ship `check` output unread
+## The drift problem, and what the tool now does about it
 
 `check` is instructed in the strongest terms not to change meaning. It changes
 meaning anyway. Three failures observed while building this skill:
@@ -97,20 +98,50 @@ meaning anyway. Three failures observed while building this skill:
   The correct fix was `energiezuinig`. A Dutch-native model still invents
   vocabulary, so "it speaks better Dutch than you" is not "it is right".
 
-That is why `check` prints an inline word-level diff to stderr, in
-`[-removed-]{+added+}` form with surrounding context, and demands review.
-**Read the diff. Approve each change.** A change is safe only if it is
-orthographic (spelling, compounds, punctuation, agreement). Any change to *who
-does what*, a number, price, term, date, product name, or the `u`/`je` register
-is a defect: reject it and keep the original wording for that span.
+Telling you to "read the diff" was not good enough, because the reader is often
+a hurried agent. So `check` now **refuses** output that alters anything a
+proofreader must never touch. It compares closed token classes between input and
+output and exits 3 on any difference:
+
+| class | what it protects |
+| --- | --- |
+| register | `ik je jij jou jouw jullie u uw wij we ons onze mijn`, i.e. who does what |
+| numbers | counts, prices, terms, dates, including `5` → `vijf` |
+| links | every `http(s)://…` |
+| emails | every address |
+| holders | `{{placeholder}}`, `%s`, `${VAR}` |
+
+```
+loes: DEFECT  pronoun/register changed (who does what, u vs je)
+         removed: 1 je
+         added:   1 u
+loes: REFUSING this correction: it altered something a proofreader must never touch.
+```
+
+Override with `--no-guard` only when you have checked the diff yourself.
+
+### What the guard does not catch
+
+It is a token comparison, not comprehension. It cannot see invented words
+(`energielijk`), lost nuance, or a rewritten clause that keeps every pronoun and
+number intact. **So still read the diff.** A change is safe only if it is
+orthographic: spelling, compounds, punctuation, agreement.
+
+For the invented-word class, `--verify` asks a *different* model family
+(`gemma-3-27b-it` by default) to name words that are not real Dutch. It is
+advisory and imperfect in both directions, so treat a finding as a prompt to
+look, not a verdict, and never treat silence as proof.
 
 When editing a real file, the safe loop is:
 
 ```sh
-loes check --file copy.md > /tmp/copy.fixed    # read the diff on stderr
-diff copy.md /tmp/copy.fixed                   # confirm nothing semantic moved
-mv /tmp/copy.fixed copy.md                     # only then
+loes check --file copy.md > /tmp/copy.fixed || exit   # exit 3 = refused, stop here
+diff copy.md /tmp/copy.fixed                          # read what actually moved
+mv /tmp/copy.fixed copy.md                            # only then
 ```
+
+The `|| exit` matters: it turns the guard into a real gate instead of a message
+you can scroll past.
 
 For `gen` and `rewrite` the same caution applies to invented facts: Loes is told
 not to make up prices, delivery times or claims, but verify anything specific

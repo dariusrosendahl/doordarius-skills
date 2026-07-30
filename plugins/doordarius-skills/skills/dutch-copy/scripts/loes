@@ -143,6 +143,84 @@ MSG
   return "$rc"
 }
 
+# --- semantic guards -------------------------------------------------------
+# A proofreader may change spelling. It may not change who does what, or any
+# number, URL, address or placeholder. Those live in closed token classes, so we
+# can compare them between input and output and refuse the result outright
+# instead of hoping a human reads the diff. This catches the two failure modes
+# seen in practice: register flips (wij -> u, je -> u) and numbers being
+# reworded ("5 jaar" -> "vijf jaar").
+extract_class() { # extract_class <class> <file>
+  case "$1" in
+    register) grep -oiE '\b(ik|je|jij|jou|jouw|jullie|u|uw|wij|we|ons|onze|mijn)\b' "$2" \
+                | tr '[:upper:]' '[:lower:]' ;;
+    numbers)  grep -oE '[0-9]+([.,][0-9]+)*' "$2" ;;
+    links)    grep -oE 'https?://[^[:space:]<>")]+' "$2" ;;
+    emails)   grep -oiE '[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}' "$2" ;;
+    holders)  grep -oE '\{\{[^}]*\}\}|%[sd]|\$\{[A-Za-z_][A-Za-z0-9_]*\}' "$2" ;;
+  esac | sort | uniq -c | sed 's/^ *//'
+}
+
+# Prints a report and returns 1 if any protected class changed.
+semantic_guard() { # semantic_guard <before_file> <after_file>
+  local cls rc=0 label
+  for cls in register numbers links emails holders; do
+    extract_class "$cls" "$1" > "$WORK/g.before"
+    extract_class "$cls" "$2" > "$WORK/g.after"
+    cmp -s "$WORK/g.before" "$WORK/g.after" && continue
+    case "$cls" in
+      register) label='pronoun/register changed (who does what, u vs je)' ;;
+      numbers)  label='numbers changed (count, price, term, date)' ;;
+      links)    label='URLs changed' ;;
+      emails)   label='e-mail addresses changed' ;;
+      holders)  label='placeholders changed' ;;
+    esac
+    printf 'loes: DEFECT  %s\n' "$label" >&2
+    diff "$WORK/g.before" "$WORK/g.after" \
+      | grep -E '^[<>]' \
+      | sed -e 's/^</         removed:/' -e 's/^>/         added:  /' >&2
+    rc=1
+  done
+  return "$rc"
+}
+
+# Second opinion from a different model family, to catch invented vocabulary
+# ("energielijk") that no token comparison can see. Advisory, never a gate.
+verify_pass() { # verify_pass <text_file>
+  local out
+  jq -n --arg model "$VERIFY_MODEL" --arg user "$(cat "$1")" '
+    {model: $model, temperature: 0, max_tokens: 300,
+     messages: [{role: "system", content: "Je bent een strenge Nederlandse taalkundige. Loop de tekst woord voor woord na en beoordeel van ELK inhoudelijk woord of het echt in het Nederlandse woordenboek staat en correct vervoegd of verbogen is. Let vooral op samenstellingen en op woorden die op een bestaand woord lijken maar het niet zijn. Geef per fout één regel in het formaat: woord -> correctie. Wees streng: bij twijfel noem je het woord. Alleen als je zeker weet dat elk woord correct Nederlands is, antwoord je exact: GEEN."},
+                {role: "user", content: $user}]}' > "$WORK/verify.json" || return 0
+  # Report why a verify pass failed rather than skipping quietly: a silent skip
+  # once hid a wrong default model id for an entire release.
+  ( api_json /chat/completions "$WORK/verify.json" ) >/dev/null 2>"$WORK/verify.err" || {
+    printf 'loes: verify pass FAILED with model %s, output not cross-checked:\n' "$VERIFY_MODEL" >&2
+    sed 's/^/         /' "$WORK/verify.err" >&2
+    printf '         pick another with --verify-model (see: loes --models)\n' >&2
+    return 0; }
+  # A strict prompt makes the model narrate every word it inspected, emitting
+  # "lampen -> lampen" and "in -> correct". Both mean "this word is fine", so
+  # drop them; only genuine corrections survive as findings.
+  out="$(jq -r '.choices[0].message.content // empty' "$RESP_FILE" \
+    | sed '/^[[:space:]]*$/d' \
+    | awk -F' *-> *' '
+        { a=$1; b=$2;
+          gsub(/^[[:space:]]+|[[:space:]]+$/,"",a); gsub(/^[[:space:]]+|[[:space:]]+$/,"",b);
+          if (NF < 2) { print; next }                      # keep GEEN and free prose
+          lb=tolower(b);
+          if (tolower(a) == lb) next                       # identity pair
+          if (lb ~ /^(correct|correct\.|ok|oke|goed|juist|prima)$/) next
+          print }' \
+    | sed '/^GEEN$/d')"
+  if [ -z "$out" ]; then
+    printf 'loes: verify (%s): no invalid Dutch words found\n' "$VERIFY_MODEL" >&2
+  else
+    printf 'loes: verify (%s) questions these words:\n' "$VERIFY_MODEL" >&2
+    printf '%s\n' "$out" | sed 's/^/         /' >&2
+  fi
+}
+
 usage() {
   cat <<'EOF'
 usage: loes <check|rewrite|gen|ask> [text ...] [options]
@@ -157,6 +235,9 @@ options:
       --temp N        default 0.1 for check, 0.5 otherwise
       --max-tokens N  default 4000
       --allow-dashes  permit em/en dashes in the output
+      --no-guard      do not fail on pronoun/number/URL drift (check mode)
+      --verify        ask a second, different model to flag invented words
+      --verify-model  model for --verify (default gemma-3-27b-it)
       --no-diff       suppress the word diff on stderr
       --json          dump the raw API response
       --models        list Loes models with pricing and exit
@@ -214,6 +295,7 @@ api_json() { # api_json <path> [body_file]; response body lands in $RESP_FILE
 
 MODE=""; FILE=""; TONE=""; INSTRUCT=""; TEMP=""; MAXTOK=4000
 ALLOW_DASHES=0; NO_DIFF=0; RAW_JSON=0; LIST_MODELS=0; DOCTOR=0; ARGS=()
+NO_GUARD=0; VERIFY=0; VERIFY_MODEL="${LOES_VERIFY_MODEL:-gemma-3-27b-it}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -232,6 +314,9 @@ while [ $# -gt 0 ]; do
     --temp)           TEMP="${2:?--temp needs a number}"; shift 2 ;;
     --max-tokens)     MAXTOK="${2:?--max-tokens needs a number}"; shift 2 ;;
     --allow-dashes)   ALLOW_DASHES=1; shift ;;
+    --no-guard)       NO_GUARD=1; shift ;;
+    --verify)         VERIFY=1; shift ;;
+    --verify-model)   VERIFY_MODEL="${2:?--verify-model needs an id}"; VERIFY=1; shift 2 ;;
     --no-diff)        NO_DIFF=1; shift ;;
     --json)           RAW_JSON=1; shift ;;
     --models)         LIST_MODELS=1; shift ;;
@@ -318,31 +403,45 @@ OUT="${OUT%"${OUT##*[![:space:]]}"}"
 printf '%s\n' "$OUT"
 
 GUARD=0
+# Read usage now: a --verify pass reuses $RESP_FILE and would overwrite it.
+IN_TOK="$(jq -r '.usage.prompt_tokens // "?"' "$RESP_FILE")"
+OUT_TOK="$(jq -r '.usage.completion_tokens // "?"' "$RESP_FILE")"
+
 if [ "$ALLOW_DASHES" = 0 ] && printf '%s' "$OUT" | grep -q $'[—–]'; then
   warn "WARNING output contains an em/en dash. Replace it before shipping (or pass --allow-dashes if your house style permits them)."
   GUARD=1
 fi
 
-if [ "$MODE" = check ] && [ "$NO_DIFF" = 0 ]; then
-  printf '%s\n' "$TEXT" > "$WORK/before"
-  printf '%s\n' "$OUT"  > "$WORK/after"
+printf '%s\n' "$TEXT" > "$WORK/before"
+printf '%s\n' "$OUT"  > "$WORK/after"
+
+if [ "$MODE" = check ]; then
   if cmp -s "$WORK/before" "$WORK/after"; then
     warn "no changes; the source was already clean."
   else
-    warn "changes vs source ([-removed-] {+added+}):"
-    if command -v git >/dev/null; then
-      git --no-pager diff --no-index --no-color --word-diff=plain \
-        --word-diff-regex='[^[:space:]]+' -- "$WORK/before" "$WORK/after" 2>/dev/null \
-        | tail -n +6 | sed 's/^/  /' >&2
-    else
-      diff -u "$WORK/before" "$WORK/after" | tail -n +4 | sed 's/^/  /' >&2
+    if [ "$NO_DIFF" = 0 ]; then
+      warn "changes vs source ([-removed-] {+added+}):"
+      if command -v git >/dev/null; then
+        git --no-pager diff --no-index --no-color --word-diff=plain \
+          --word-diff-regex='[^[:space:]]+' -- "$WORK/before" "$WORK/after" 2>/dev/null \
+          | tail -n +6 | sed 's/^/  /' >&2
+      else
+        diff -u "$WORK/before" "$WORK/after" | tail -n +4 | sed 's/^/  /' >&2
+      fi
     fi
-    warn "REVIEW REQUIRED - confirm every change above is purely orthographic. Loes has been observed silently flipping wij/u and inventing words while 'correcting'."
+    if [ "$NO_GUARD" = 0 ]; then
+      if semantic_guard "$WORK/before" "$WORK/after"; then
+        warn "guard passed: pronouns, numbers, URLs, addresses and placeholders are unchanged. Still read the diff for wording."
+      else
+        warn "REFUSING this correction: it altered something a proofreader must never touch. Keep the original for the spans above, or rerun with --no-guard if you have checked it yourself."
+        GUARD=1
+      fi
+    fi
   fi
 fi
 
-printf 'loes: %s in=%s out=%s tokens\n' "$MODEL" \
-  "$(jq -r '.usage.prompt_tokens // "?"' "$RESP_FILE")" \
-  "$(jq -r '.usage.completion_tokens // "?"' "$RESP_FILE")" >&2
+[ "$VERIFY" = 1 ] && verify_pass "$WORK/after"
+
+printf 'loes: %s in=%s out=%s tokens\n' "$MODEL" "$IN_TOK" "$OUT_TOK" >&2
 
 exit "$([ "$GUARD" = 1 ] && echo 3 || echo 0)"
