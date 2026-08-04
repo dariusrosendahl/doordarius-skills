@@ -12,7 +12,7 @@ Skills are short markdown files with frontmatter that teach an AI assistant how 
 | --- | --- |
 | [`efficient-browser-automation`](./plugins/doordarius-skills/skills/efficient-browser-automation/SKILL.md) | Use Playwright CLI + accessibility snapshots instead of screenshots/MCP browser tools |
 | [`seo-technical-expert`](./plugins/doordarius-skills/skills/seo-technical-expert/SKILL.md) | Multi-mode SEO/SEA agent — full audits, GSC analysis, Core Web Vitals, BigQuery, content/copy audits, ads review |
-| [`dutch-copy`](./plugins/doordarius-skills/skills/dutch-copy/SKILL.md) | Dutch (Nederlands) copywriting, spellcheck and proofreading via Loes, the EU-hosted Dutch-native LLM from HostYourAI, with a diff gate so no facts change |
+| [`dutch-copy`](./plugins/doordarius-skills/skills/dutch-copy/SKILL.md) | Dutch copywriting and proofreading via Loes, with prompt-injection and semantic-drift gates before any copy reaches stdout |
 
 ## 30-second install
 
